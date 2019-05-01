@@ -1,0 +1,177 @@
+formatVersion: 1
+name: Wordpress 2.0
+version: 1
+inputs:
+  env:
+    type: string
+    title: Environment
+    description: Target Environment
+    oneOf:
+      - title: Dev
+        const: 'env:dev'
+      - title: Test
+        const: 'env:test'
+      - title: Prod
+        const: 'env:prod'
+    default: 'env:dev'
+  os:
+    type: string
+    title: Operating System
+    description: Operating System
+    oneOf:
+      - title: Ubuntu 16
+        const: ubuntu
+      - title: Ubuntu 18
+        const: ubuntu18
+    default: ubuntu
+  size:
+    type: string
+    enum:
+      - small
+      - medium
+      - large
+    default: small
+    description: Size of Nodes
+    title: Tier Machine Size
+  osusername:
+    type: string
+    minLength: 3
+    maxLength: 20
+    pattern: '[a-z]+'
+    title: OS Username
+    description: OS Username
+    default: jon
+  osuserkey:
+    type: string
+    title: User Public Key
+    description: SSH Public Key
+    maxLength: 1000
+    default: AAAAB3NzaC1yc2EAAAADAQABAAABAQDr1QxSB0+bWyJ1gkPiKBi4prqq8eli2Obe508jJpiDuY9qT9muw2UTXx7D1lpZkyFRz+LmfcptH6PZ8VDuzZ7daDnl/SnR7N4hRdUdNH8ziUoHcUowJaT8WH1OE2dw2ZzCMN20KmqymjlNz4qXKWwO4duzO4X8MVN97c8AZY4KUHWmDqmfbbN6Ir7p6jOnbinI3gBymf9+mRVuj1Z/3TzASnDY+I8OvnA84BQWLzhJmUgQCqQ7Efdzt+E+mZ63v56SFGrjP9ZZk+9Rmf2xL1ytIL5bHXy4o0CBSXOfuDXaHh7PN3wRSzio6AOQ9aC5jZg2tbeB8APxYwkEe+Jrv+I1
+  dbusername:
+    type: string
+    minLength: 3
+    maxLength: 20
+    pattern: '[a-z]+'
+    title: Database Username
+    description: Database Username
+    default: mysql
+  dbuserpassword:
+    type: string
+    pattern: '[a-z0-9A-Z@#$]+'
+    encrypted: true
+    title: Database Password
+    description: Database Password
+    default: VMware1!
+  databaseDiskSize:
+    type: number
+    default: 4
+    maximum: 10
+    title: MySQL Data Disk Size
+    description: Database Disk Size
+  archiveDiskSize:
+    type: number
+    default: 4
+    maximum: 10
+    title: Wordpress Archive Disk Size
+    description: Archive Storage Disk Speed
+resources:
+  DBTier:
+    type: Cloud.Machine
+    properties:
+      name: mysql
+      image: '${input.os}'
+      flavor: '${input.size}'
+      constraints:
+        - tag: '${input.env}'
+      networks:
+        - name: '${resource["WP-Network-Private"].name}'
+          assignPublicIpAddress: true
+      cloudConfig: |
+        #cloud-config
+        repo_update: true
+        repo_upgrade: all
+
+        users:
+        - name: ${input.osusername}
+          ssh-authorized-keys:
+          - ssh-rsa ${input.osuserkey}
+          sudo: ['ALL=(ALL) NOPASSWD:ALL']
+          groups: sudo
+          shell: /bin/bash
+
+        packages:
+         - mysql-server
+        runcmd:
+         - sed -e '/bind-address/ s/^#*/#/' -i /etc/mysql/mysql.conf.d/mysqld.cnf
+         - service mysql restart
+         - mysql -e "GRANT ALL PRIVILEGES ON *.* TO '${input.dbusername}'@'%' IDENTIFIED BY '${input.dbuserpassword}';"
+         - mysql -e "FLUSH PRIVILEGES;"
+      attachedDisks: []
+  WebTier:
+    type: Cloud.Machine
+    properties:
+      name: wordpress
+      flavor: '${input.size}'
+      image: '${input.os}'
+      constraints:
+        - tag: '${input.env}'
+      networks:
+        - name: '${resource["WP-Network-Private"].name}'
+      cloudConfig: |
+        #cloud-config
+        repo_update: true
+        repo_upgrade: all
+        users:
+        - name: ${input.osusername}
+          ssh-authorized-keys:
+          - ssh-rsa ${input.osuserkey}
+          sudo: ['ALL=(ALL) NOPASSWD:ALL']
+          groups: sudo
+          shell: /bin/bash
+        packages:
+         - apache2
+         - php
+         - php-mysql
+         - libapache2-mod-php
+         - mysql-client
+         - php-curl
+         - php-gd
+         - php-mbstring
+         - php-xml
+         - php-xmlrpc
+         - ${input.os == "ubuntu 16.04" ? "php-mcrypt":"php-soap\n - php-intl\n - php-zip"}
+
+        runcmd:
+         - mkdir -p /var/www/html/mywordpresssite && cd /var/www/html && wget https://wordpress.org/latest.tar.gz && tar -xzf /var/www/html/latest.tar.gz -C /var/www/html/mywordpresssite --strip-components 1
+         - i=0; while [ $i -le 5 ]; do mysql --connect-timeout=3 -h '${resource.DBTier.networks[0].address}' -u '${input.dbusername}' -p'${input.dbuserpassword}' -e "SHOW STATUS;" && break || sleep 15; i=$((i+1)); done
+         - mysql -u '${input.dbusername}' -p'${input.dbuserpassword}' -h '${resource.DBTier.networks[0].address}' -e "create database wordpress_blog;"
+         - service apache2 reload
+        write_files:
+          - path: /var/www/html/mywordpresssite/wp-config.php
+            permissions: '0644'
+            content: |
+              <?php
+              define( 'DB_NAME', 'wordpress_blog' );
+              define( 'DB_USER', '${input.dbusername}' );
+              define( 'DB_PASSWORD', '${input.dbuserpassword}' );
+              define( 'DB_HOST', '${resource.DBTier.networks[0].address}' );
+              define( 'DB_CHARSET', 'utf8' );
+              define( 'DB_COLLATE', '' );
+              define( 'AUTH_KEY',         'put your unique phrase here' );
+              define( 'SECURE_AUTH_KEY',  'put your unique phrase here' );
+              define( 'LOGGED_IN_KEY',    'put your unique phrase here' );
+              define( 'NONCE_KEY',        'put your unique phrase here' );
+              define( 'AUTH_SALT',        'put your unique phrase here' );
+              define( 'SECURE_AUTH_SALT', 'put your unique phrase here' );
+              define( 'LOGGED_IN_SALT',   'put your unique phrase here' );
+              define( 'NONCE_SALT',       'put your unique phrase here' );
+              $table_prefix = 'wp_';
+              define( 'WP_DEBUG', false );
+              if ( ! defined( 'ABSPATH' ) ) {
+                define( 'ABSPATH', dirname( __FILE__ ) . '/' );
+              }
+              require_once( ABSPATH . 'wp-settings.php' );
+  WP-Network-Private:
+    type: Cloud.Network
+    properties:
+      name: WP-Network-Private
